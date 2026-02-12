@@ -7,9 +7,7 @@ st.set_page_config(page_title="Admin Portal", layout="centered")
 st.title("🔐 Admin Upload Portal")
 st.info("This page is for data management. Use the sidebar to navigate to the Public Dashboard.")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# If dashboard.py is in 'pages/', we go up one level to find 'data/'
-DATA_PATH = os.path.join(BASE_DIR, "..", "data", "current_availability.csv")
+DATA_PATH = "data/current_availability.csv"
 
 # Create data folder if it doesn't exist
 if not os.path.exists("data"):
