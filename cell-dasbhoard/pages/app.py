@@ -7,7 +7,7 @@ st.set_page_config(page_title="Admin Portal", layout="centered")
 st.title("🔐 Admin Upload Portal")
 st.info("This page is for data management. Use the sidebar to navigate to the Public Dashboard.")
 
-DATA_PATH = "data/current_availability.csv"
+DATA_PATH = "current_availability.csv"
 
 # Create data folder if it doesn't exist
 if not os.path.exists("data"):
