@@ -142,13 +142,6 @@ else:
     display_date = datetime.now().strftime("%d %B %Y")
 
 # 5. SIDEBAR FILTERS
-# Default to the last available date, but allow user to change it
-selected_date = st.sidebar.selectbox(
-    "Select Date", 
-    options=date_cols, 
-    index=len(date_cols)-1 if date_cols else 0,
-    key="date_filter"
-)
 st.sidebar.header("🛠️ Dashboard Filters")
 all_sids = ["All Sites"] + sorted(df['SID'].astype(str).unique().tolist())
 search_sid = st.sidebar.selectbox("Select Station ID", all_sids, key="sid_filter")
