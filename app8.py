@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 from streamlit_gsheets import GSheetsConnection
+import streamlit.components.v1 as components
 
 # 1. PAGE CONFIGURATION
 st.set_page_config(page_title="Network Performance Insights", layout="wide")
@@ -192,10 +193,8 @@ if sel_usf:
 if sel_rev:
     filt_df = filt_df[filt_df['REVENUE CAT'].isin(sel_rev)]
     filters_active = True 
-
-
+# 6. CHART FUNCTION - FIXED PROPERTY PATHS
 def create_advanced_chart(x_data, y_data, title, color, y_label, is_percent=True):
-    # 1. Clean up labels for the X-axis
     x_clean = []
     for x in x_data:
         try:
@@ -205,14 +204,17 @@ def create_advanced_chart(x_data, y_data, title, color, y_label, is_percent=True
 
     fig = go.Figure()
 
-    # 2. Create the smoothed trend line with 2-decimal visible text labels
     fig.add_trace(go.Scatter(
         x=x_clean, 
         y=y_data,
         mode='lines+markers+text', 
-        # Update :.1f to :.2f for two decimal places
-        text=[f"{v:.2f}%" if is_percent else f"{v:.2f}" for v in y_data], 
+        text=[f"<b>{v:.2f}%</b>" if is_percent else f"<b>{v:.2f}</b>" for v in y_data], 
         textposition="top center", 
+        textfont=dict(
+            family="Inter, sans-serif",
+            size=12,          
+            color="#000000"   
+        ),
         cliponaxis=False, 
         line=dict(width=4, color=color, shape='spline'), 
         marker=dict(
@@ -225,7 +227,6 @@ def create_advanced_chart(x_data, y_data, title, color, y_label, is_percent=True
         hoverinfo="x+y"
     ))
 
-    # 3. Optimize Layout
     fig.update_layout(
         title=dict(
             text=f"<b>{title}</b>", 
@@ -233,21 +234,30 @@ def create_advanced_chart(x_data, y_data, title, color, y_label, is_percent=True
         ),
         margin=dict(l=40, r=40, t=100, b=40),
         height=450,
+        # --- FIXED X-AXIS ---
         xaxis=dict(
-            title="<b>Timeline (Dates)</b>",
+            title=dict(
+                text="<b>Timeline (Dates)</b>",
+                font=dict(color="#000000", size=14) # Correct path
+            ),
+            tickfont=dict(color="#000000", size=11, family="Inter, sans-serif"),
             showline=True, 
             linecolor='#e2e8f0', 
             showgrid=False,
             type='category'
         ),
+        # --- FIXED Y-AXIS ---
         yaxis=dict(
-            title="<b>Average A Per(%)</b>",  # Y-axis Label
+            title=dict(
+                text="<b>Average A Per(%)</b>",
+                font=dict(color="#000000", size=14) # Correct path
+            ),
+            tickfont=dict(color="#000000", size=11, family="Inter, sans-serif"),
             showgrid=True, 
             gridcolor='#f1f5f9', 
             zeroline=False,
             dtick=0.5,
-            # Adjust range slightly to accommodate the longer 2-decimal labels
-            range=[max(0, min(y_data) - 0.5), min(100, max(y_data) + 1.2)] if len(y_data) > 0 else None
+            range=[max(0, min(y_data) - 0.5), min(100, max(y_data) + 1.5)] if len(y_data) > 0 else None
         ),
         plot_bgcolor='white',
         paper_bgcolor='rgba(0,0,0,0)',
@@ -355,3 +365,38 @@ if len(filt_df) == 1:
                     <div class="detail-value">{display_val}</div>
                 </div>
             """, unsafe_allow_html=True)
+
+
+# 8. SITE LOCATION MAP
+if search_sid != "All Sites" and len(filt_df) == 1:
+    st.markdown(f"### 📍 Site Location: {filt_df.iloc[0]['SID']}")
+    
+    # Extract coordinates
+    # Replace 'LATITUDE' and 'LONGITUDE' with the exact column names in your sheet
+    lat = filt_df.iloc[0].get('LATITUDE')
+    lon = filt_df.iloc[0].get('LONGITUDE')
+    
+    if pd.notnull(lat) and pd.notnull(lon):
+        
+        # 1. Create the Google Maps Embed URL
+        # 'q' is the query (lat,lon), 't=k' is satellite, 'z' is zoom level
+        google_maps_embed = f"https://www.google.com/maps?q={lat},{lon}&hl=en&z=14&output=embed"
+        
+        # 2. Embed using an IFRAME
+        components.html(
+            f"""
+            <iframe 
+                width="100%" 
+                height="450" 
+                frameborder="0" 
+                scrolling="no" 
+                marginheight="0" 
+                marginwidth="0" 
+                src="{google_maps_embed}">
+            </iframe>
+            """,
+            height=460,
+        )
+    
+    # Optional button to open full site
+    st.link_button("Open in Google Maps App", f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
