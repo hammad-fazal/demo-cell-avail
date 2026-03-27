@@ -130,35 +130,58 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-
-# 3. GOOGLE SHEETS CONNECTION
+# 3. OPTIMIZED GOOGLE SHEETS CONNECTION
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+@st.cache_data(ttl="15m")
+def load_all_network_data():
+    sheet_links = {
+        "SITE_AVAIL": st.secrets["connections"]["gsheets"]["url_site"],
+        "AVAILABILITY": st.secrets["connections"]["gsheets"]["url_avail"],
+        "2G": st.secrets["connections"]["gsheets"]["url_2g"],
+        "3G": st.secrets["connections"]["gsheets"]["url_3g"],
+        "4G": st.secrets["connections"]["gsheets"]["url_4g"]
+    }
+    
+    loaded_tech_dfs = {}
+    for name, link in sheet_links.items():
+        temp_df = conn.read(spreadsheet=link, ttl=0)
+        temp_df.columns = [str(c).strip().upper() for c in temp_df.columns]
+        loaded_tech_dfs[name] = temp_df
+    return loaded_tech_dfs
+
 try:
-    # Read the data from Google Sheets
-    df = conn.read(ttl=0) 
+    tech_dfs = load_all_network_data()
+    df = tech_dfs.get("AVAILABILITY")
     
-    # Standardize column names (Fixes KeyError for 'GRID ' or 'REVENUE CAT ')
-    df.columns = [str(c).strip().upper() for c in df.columns]
-    
-    # --- UPDATED REFRESH LOGIC ---
+    # --- UPDATED BUTTON LOGIC ---
     if st.sidebar.button("Clear Filters", use_container_width=True):
-        # 1. Clear the streamlit cache to pull fresh data from the sheet
-        st.cache_data.clear()
+        # REMOVED: st.cache_data.clear() <- This was causing the slow reload
         
-        # 2. Clear filter keys from session state so the UI resets
+        # We only clear the UI selections
         keys_to_reset = ["sid_filter", "region_filter", "tgl_filter", "usf_filter", "rev_filter", "date_filter"]
         for key in keys_to_reset:
             if key in st.session_state:
                 st.session_state[key] = "All Sites" if key == "sid_filter" else []
         
-        # 3. Rerun the app to show updated numbers in the 3 cards
+        # Rerun to apply the UI changes using the data ALREADY in memory
         st.rerun()
-    
-    st.sidebar.success("📡 Connected to Live Data")
 
 except Exception as e:
     st.error(f"⚠️ Connection Error: {e}")
+    st.stop()
+
+try:
+    # Call the cached function
+    tech_dfs = load_all_network_data()
+    
+    # Assign your main dataframe for filters
+    df = tech_dfs.get("AVAILABILITY")
+    
+    st.sidebar.success("Connected to Live Data")
+
+except Exception as e:
+    st.error(f"⚠️ Error loading data: {e}")
     st.stop()
 
 # 4. DATA PROCESSING
@@ -303,17 +326,68 @@ def create_advanced_chart(x_data, y_data, title, color, y_label, is_percent=True
 # 7. DASHBOARD UI
 st.markdown('<h1 style="color: #0f172a;">Network Intelligence Portal</h1>', unsafe_allow_html=True)
 
-# --- TOP 3 METRIC CARDS ---
-# These now update based on your Region, TGL, and New USF Sites selections
+def create_tech_comparison_chart(tech_dict, dates):
+    fig = go.Figure()
+    # Colors: Zong Purple, Zong Green, Zong Blue
+    colors = {"2G": "#7030a0", "3G": "#92d050", "4G": "#2e75b6"}
+    
+    for tech, t_df in tech_dict.items():
+        # Find dates that exist in THIS specific sheet
+        valid_dates = [d for d in dates if d in t_df.columns]
+        if not valid_dates: continue
+        
+        # Calculate the average availability for the whole sheet for those dates
+        y_values = t_df[valid_dates].apply(pd.to_numeric, errors='coerce').mean()
+        
+        fig.add_trace(go.Scatter(
+            x=[str(d).split(' ')[0] for d in valid_dates], 
+            y=y_values,
+            name=tech,
+            mode='lines+markers',
+            line=dict(width=3, color=colors.get(tech, "#000")),
+            hovertemplate=f"<b>{tech}</b>: %{{y:.2f}}%<extra></extra>"
+        ))
 
-# --- TOP 3 METRIC CARDS ---
+    fig.update_layout(
+        title="<b>2G / 3G / 4G Availability Comparison</b>",
+        height=400,
+        xaxis=dict(type='category', showgrid=False),
+        yaxis=dict(title="Avg Avail %", range=[90, 100.5]),
+        legend=dict(orientation="h", y=1.1, x=1, xanchor='right'),
+        plot_bgcolor='white',
+        hovermode="x unified"
+    )
+    return fig   
+
+# --- TOP 3 METRIC CARDS (With Delta Analysis) ---
 m1, m2, m3 = st.columns(3)
 
 with m1:
-    # Uses the selected date from the sidebar for Availability
     if selected_date and selected_date in filt_df.columns:
-        val = pd.to_numeric(filt_df[selected_date], errors='coerce').mean()
-        st.metric(f"Avg Cell Availability ({selected_date})", f"{val:.2f}%")
+        # 1. Calculate Current Average
+        current_val = pd.to_numeric(filt_df[selected_date], errors='coerce').mean()
+        
+        # 2. Delta Logic: Find the previous day's data
+        delta_label = None
+        try:
+            # Find where the selected date sits in the list
+            date_idx = date_cols.index(selected_date)
+            if date_idx > 0:
+                prev_date_col = date_cols[date_idx - 1]
+                prev_val = pd.to_numeric(filt_df[prev_date_col], errors='coerce').mean()
+                
+                # Calculate the difference
+                diff = current_val - prev_val
+                delta_label = f"{diff:+.2f}% vs Prev. Day"
+        except Exception:
+            delta_label = "No prev. data"
+
+        # 3. Display Metric with Delta
+        st.metric(
+            label=f"Avg Cell Availability ({selected_date})", 
+            value=f"{current_val:.2f}%",
+            delta=delta_label
+        )
     else:
         st.metric("Availability Data", "N/A")
 
@@ -327,110 +401,113 @@ with m3:
     # Total count of active sites in the current filter
     st.metric("Total Active Sites", len(filt_df))
 
-
-# --- TREND GRAPH WITH DURATION SELECTOR ---
+# --- TREND GRAPHS (TABBED INTERFACE) ---
 if len(date_cols) > 1:
-    # 1. Open the CSS container FIRST
     st.markdown('<div class="graph-container">', unsafe_allow_html=True)
     
-    # 2. Layout for Header and Selector (now inside the div)
+    # 1. Header and Range Selector (Common for all tabs)
     head_col, select_col = st.columns([4, 1])
-    
     with head_col:
-        # Using markdown for the header to prevent extra top-margin inside the container
-        st.markdown('<h3 style="color: #1e293b; margin-top: 0;">Cell Availibility</h3>', unsafe_allow_html=True)
-
+        st.markdown('<h3 style="color: #1e293b; margin-top: 0;">Performance Analytics</h3>', unsafe_allow_html=True)
     with select_col:
-        # User chooses how many days to show
         num_days = st.selectbox(
             "Display Range",
             options=[7, 14, 21, 30],
-            index=0,  # Default to 7 days
+            index=0,
             key="graph_duration_selector",
-            label_visibility="collapsed" # Hides the text label so it looks cleaner next to the title
+            label_visibility="collapsed"
         )
-    
-    # 3. Slice date columns based on user selection
-    trend_days = date_cols[-num_days:]
-    
-    # Calculate means for the selected timeline
-    day_values = filt_df[trend_days].apply(pd.to_numeric, errors='coerce').mean()
-    
-    # 4. Render the chart
-    st.plotly_chart(
-        create_advanced_chart(
-            trend_days, 
-            day_values, 
-            f"Last {len(trend_days)} Days", 
-            "#3b82f6", 
-            "Availability"
-        ), 
-        use_container_width=True
-    )
-    
-    # 5. Close the CSS container LAST
+
+    # 2. Define the Tabs
+    tab_site, tab_avail, tab_2g, tab_3g, tab_4g = st.tabs([
+        "Site Availability", "Cell Availability", "2G Cell Availability", "3G Cell Availability", "4G Cell Availability"
+    ])
+
+    # 3. Helper Function to Process & Render each tech
+    def render_tech_chart(tab_obj, tech_key, color, y_label):
+        with tab_obj:
+            t_df = tech_dfs.get(tech_key)
+            if t_df is not None:
+                # Apply Global Sidebar Filters to this specific tech dataframe
+                t_filt = t_df.copy()
+                if search_sid != "All Sites":
+                    t_filt = t_filt[t_filt['SID'].astype(str) == search_sid]
+                if sel_region:
+                    t_filt = t_filt[t_filt['REGION'].isin(sel_region)]
+                
+                # Identify date columns for this sheet
+                t_dates = [c for c in t_filt.columns if '-' in c and c[0].isdigit()]
+                t_trend_days = t_dates[-num_days:]
+                
+                if t_trend_days:
+                    # Calculate means
+                    t_values = t_filt[t_trend_days].apply(pd.to_numeric, errors='coerce').mean()
+                    
+                    # Create the chart using your existing custom function
+                    fig = create_advanced_chart(
+                        t_trend_days, 
+                        t_values, 
+                        f"{tech_key} Trend (Last {len(t_trend_days)} Days)", 
+                        color, 
+                        y_label,
+                        is_percent=(tech_key in ["AVAILABILITY", "SITE_AVAIL"])
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info(f"No date-based records found for {tech_key}")
+
+    # 4. Fill the Tabs (Using Zong Purple & Green theme)
+    render_tech_chart(tab_site, "SITE_AVAIL", "#0ea5e9", "Avail %")
+    render_tech_chart(tab_avail, "AVAILABILITY", "#3b82f6", "Avail %") # Professional Blue
+    render_tech_chart(tab_2g, "2G", "#7030a0", "Erlangs")             # Zong Purple
+    render_tech_chart(tab_3g, "3G", "#92d050", "GBs")                 # Zong Green
+    render_tech_chart(tab_4g, "4G", "#2e75b6", "GBs")                 # Tech Blue
+
     st.markdown('</div>', unsafe_allow_html=True)
-        
 
-# 7. DETAILED SITE CARDS (Enhanced to handle 10 columns)
-if len(filt_df) == 1:
-    st.markdown(f"### SITE: {filt_df.iloc[0]['SID']}")
-    site = filt_df.iloc[0]
-    
-    # We use 5 columns per row. With 10 items, it will create 2 rows automatically.
-    cols = st.columns(5)
-    
-    # Updated list containing all 10 columns (Standardized to Uppercase to match Step 3)
-    details = [
-        'REGION', 'TGL', 'GRID', 'TECHNOLOGY', 'SITE CATEGORY', 
-        'CO', 'SUB CITIES', 'DEPENDANCY', 'NPS SITES', 'SITE IMPORTANCE',
-        'REVENUE CAT',	'ONAIRDATE', 'NEW USF SITES', 'SHARING STATUS', 'SHARED WITH',
-        'OMO SITE ID', 'LOCKED SITE EXPIRE DATE', 'DG OPERTATIONAL STATUS (696 UPDATE)',
-        'SOLAR SITES', 'LI-ION SITES' 
-    ]
-    
-    for i, d in enumerate(details):
-        with cols[i % 5]:
-            # Ensure the column exists in Uppercase
-            display_val = site[d] if d in site else "N/A"
-            st.markdown(f"""
-                <div class="detail-card">
-                    <div class="detail-label">{d}</div>
-                    <div class="detail-value">{display_val}</div>
-                </div>
-            """, unsafe_allow_html=True)
-
-
-# 8. SITE LOCATION MAP
+# --- 8. SITE SPECIFIC DETAILS & MAP ---
 if search_sid != "All Sites" and len(filt_df) == 1:
-    st.markdown(f"### 📍 Site Location: {filt_df.iloc[0]['SID']}")
+    st.write("---")
+    row = filt_df.iloc[0]
     
-    # Extract coordinates
-    # Replace 'LATITUDE' and 'LONGITUDE' with the exact column names in your sheet
-    lat = filt_df.iloc[0].get('LATITUDE')
-    lon = filt_df.iloc[0].get('LONGITUDE')
+    # DISPLAY SITE METADATA USING YOUR CUSTOM CSS
+    st.markdown(f"### 📋 Site Information: {row['SID']}")
+    
+    # Row 1 of Details
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f'<div class="detail-card"><div class="detail-label">Region</div><div class="detail-value">{row.get("REGION", "N/A")}</div></div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'<div class="detail-card"><div class="detail-label">TGL</div><div class="detail-value">{row.get("TGL", "N/A")}</div></div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'<div class="detail-card"><div class="detail-label">Site Category</div><div class="detail-value">{row.get("SITE CATEGORY", "N/A")}</div></div>', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'<div class="detail-card"><div class="detail-label">Revenue Category</div><div class="detail-value">{row.get("REVENUE CAT", "N/A")}</div></div>', unsafe_allow_html=True)
+
+    # Row 2 of Details
+    st.markdown("<br>", unsafe_allow_html=True)
+    c5, c6, c7, c8 = st.columns(4)
+    with c5:
+        st.markdown(f'<div class="detail-card"><div class="detail-label">On-Air Date</div><div class="detail-value">{row.get("ONAIRDATE", "N/A")}</div></div>', unsafe_allow_html=True)
+    with c6:
+        st.markdown(f'<div class="detail-card"><div class="detail-label">USF Status</div><div class="detail-value">{row.get("NEW USF SITES", "Non-USF")}</div></div>', unsafe_allow_html=True)
+    with c7:
+        st.markdown(f'<div class="detail-card"><div class="detail-label">Site Importance</div><div class="detail-value">{row.get("SITE IMPORTANCE", "N/A")}</div></div>', unsafe_allow_html=True)
+    with c8:
+        st.markdown(f'<div class="detail-card"><div class="detail-label">Sharing Status</div><div class="detail-value">{row.get("SHARING STATUS", "N/A")}</div></div>', unsafe_allow_html=True)
+
+    # MAP SECTION
+    st.markdown("### 📍 Geographic Location")
+    lat = row.get('LATITUDE')
+    lon = row.get('LONGITUDE')
     
     if pd.notnull(lat) and pd.notnull(lon):
-        
-        # 1. Create the Google Maps Embed URL
-        # 'q' is the query (lat,lon), 't=k' is satellite, 'z' is zoom level
-        google_maps_embed = f"https://www.google.com/maps?q={lat},{lon}&hl=en&z=14&output=embed"
-        
-        # 2. Embed using an IFRAME
+        # Using a more robust Google Maps embed link
+        map_url = f"https://www.google.com/maps?q={lat},{lon}&hl=en&z=15&output=embed"
         components.html(
-            f"""
-            <iframe 
-                width="100%" 
-                height="450" 
-                frameborder="0" 
-                scrolling="no" 
-                marginheight="0" 
-                marginwidth="0" 
-                src="{google_maps_embed}">
-            </iframe>
-            """,
+            f'<iframe width="100%" height="450" frameborder="0" src="{map_url}"></iframe>',
             height=460,
         )
-    
-    # Optional button to open full site
-    st.link_button("Open in Google Maps App", f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
+        st.link_button("🚀 Open in Google Maps App", f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
+    else:
+        st.warning("Coordinates not available for this site.")
