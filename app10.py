@@ -393,9 +393,35 @@ with m1:
 
 with m2:
     if latest_tch_col:
-        # Average TCH% for selected USF/Non-USF sites
-        val = pd.to_numeric(filt_df[latest_tch_col], errors='coerce').mean()
-        st.metric(f"{display_date.split('-')[1]} Average TCH%", f"{val:.2f}%")
+        # 1. Calculate Current Average for the filtered sites
+        current_tch_val = pd.to_numeric(filt_df[latest_tch_col], errors='coerce').mean()
+        
+        # 2. Delta Logic: Find the previous TCH column
+        tch_delta_label = None
+        try:
+            # Find the index of the latest TCH column in the list of all TCH columns
+            tch_idx = tch_cols.index(latest_tch_col)
+            if tch_idx > 0:
+                prev_tch_col = tch_cols[tch_idx - 1]
+                prev_tch_val = pd.to_numeric(filt_df[prev_tch_col], errors='coerce').mean()
+                
+                # Calculate the difference
+                tch_diff = current_tch_val - prev_tch_val
+                
+                # Clean up the previous column name for the label (e.g., "vs FEB")
+                prev_label = prev_tch_col.replace(' TCH%', '')
+                tch_delta_label = f"{tch_diff:+.2f}% vs {prev_label}"
+        except Exception:
+            tch_delta_label = "No prev. data"
+
+        # 3. Display Metric with Delta
+        st.metric(
+            label=f"{latest_tch_col.replace(' TCH%', '')} Average TCH%", 
+            value=f"{current_tch_val:.2f}%",
+            delta=tch_delta_label
+        )
+    else:
+        st.metric("TCH% Data", "N/A")
 
 with m3:
     # Total count of active sites in the current filter
@@ -434,6 +460,17 @@ if len(date_cols) > 1:
                     t_filt = t_filt[t_filt['SID'].astype(str) == search_sid]
                 if sel_region:
                     t_filt = t_filt[t_filt['REGION'].isin(sel_region)]
+                if sel_tgl:
+                    t_filt = t_filt[t_filt['TGL'].isin(sel_tgl)]
+
+                # ADD THESE TWO NEW FILTERS BELOW:
+                if sel_usf:
+                    if 'NEW USF SITES' in t_filt.columns:
+                        t_filt = t_filt[t_filt['NEW USF SITES'].isin(sel_usf)]
+            
+                if sel_rev:
+                    if 'REVENUE CAT' in t_filt.columns:
+                        t_filt = t_filt[t_filt['REVENUE CAT'].isin(sel_rev)]    
                 
                 # Identify date columns for this sheet
                 t_dates = [c for c in t_filt.columns if '-' in c and c[0].isdigit()]
